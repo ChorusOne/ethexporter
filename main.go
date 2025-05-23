@@ -4,13 +4,14 @@ import (
 	"bufio"
 	"context"
 	"fmt"
-	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/ethclient"
 	"math/big"
 	"net/http"
 	"os"
 	"strings"
 	"time"
+
+	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/ethclient"
 )
 
 var (
@@ -24,12 +25,12 @@ var (
 )
 
 type Watching struct {
+	Owner   string
 	Name    string
 	Address string
 	Balance string
 }
 
-//
 // Connect to geth server
 func ConnectionToGeth(url string) error {
 	var err error
@@ -37,7 +38,6 @@ func ConnectionToGeth(url string) error {
 	return err
 }
 
-//
 // Fetch ETH balance from Geth server
 func GetEthBalance(address string) *big.Float {
 	balance, err := eth.BalanceAt(context.TODO(), common.HexToAddress(address), nil)
@@ -47,7 +47,6 @@ func GetEthBalance(address string) *big.Float {
 	return ToEther(balance)
 }
 
-//
 // Fetch ETH balance from Geth server
 func CurrentBlock() uint64 {
 	block, err := eth.BlockByNumber(context.TODO(), nil)
@@ -58,7 +57,6 @@ func CurrentBlock() uint64 {
 	return block.NumberU64()
 }
 
-//
 // CONVERTS WEI TO ETH
 func ToEther(o *big.Int) *big.Float {
 	pul, int := big.NewFloat(0), big.NewFloat(0)
@@ -67,7 +65,6 @@ func ToEther(o *big.Int) *big.Float {
 	return pul
 }
 
-//
 // HTTP response handler for /metrics
 func MetricsHttp(w http.ResponseWriter, r *http.Request) {
 	var allOut []string
@@ -79,7 +76,12 @@ func MetricsHttp(w http.ResponseWriter, r *http.Request) {
 		bal := big.NewFloat(0)
 		bal.SetString(v.Balance)
 		total.Add(total, bal)
-		allOut = append(allOut, fmt.Sprintf("%veth_balance{name=\"%v\",address=\"%v\"} %v", prefix, v.Name, v.Address, v.Balance))
+		// add an owner label if there's one defined
+		outSuffix := ""
+		if v.Owner != "" {
+			outSuffix = fmt.Sprintf(`, owner="%s"`, v.Owner)
+		}
+		allOut = append(allOut, fmt.Sprintf("%veth_balance{name=\"%v\",address=\"%v\"%s} %v", prefix, v.Name, v.Address, outSuffix, v.Balance))
 	}
 	allOut = append(allOut, fmt.Sprintf("%veth_balance_total %0.18f", prefix, total))
 	allOut = append(allOut, fmt.Sprintf("%veth_load_seconds %0.2f", prefix, loadSeconds))
@@ -88,7 +90,28 @@ func MetricsHttp(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintln(w, strings.Join(allOut, "\n"))
 }
 
-//
+func ParseAddressLine(line string) (*Watching, error) {
+	toks := strings.Split(line, ":")
+	if len(toks) < 2 || len(toks) > 3 {
+		return nil, fmt.Errorf("invalid line in addresses file: %s", line)
+	}
+
+	out := &Watching{
+		Name:    toks[0],
+		Address: toks[1],
+	}
+
+	if !common.IsHexAddress(out.Address) {
+		return nil, fmt.Errorf("invalid ethereum address in line: %s", line)
+	}
+
+	if len(toks) == 3 {
+		out.Owner = toks[2]
+	}
+
+	return out, nil
+}
+
 // Open the addresses.txt file (name:address)
 func OpenAddresses(filename string) error {
 	file, err := os.Open(filename)
@@ -98,14 +121,12 @@ func OpenAddresses(filename string) error {
 	defer file.Close()
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
-		object := strings.Split(scanner.Text(), ":")
-		if common.IsHexAddress(object[1]) {
-			w := &Watching{
-				Name:    object[0],
-				Address: object[1],
-			}
-			allWatching = append(allWatching, w)
+		w, err := ParseAddressLine(scanner.Text())
+		if err != nil {
+			return err
 		}
+		allWatching = append(allWatching, w)
+
 	}
 	if err := scanner.Err(); err != nil {
 		return err
